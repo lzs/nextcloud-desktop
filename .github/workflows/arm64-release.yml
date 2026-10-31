@@ -37,7 +37,10 @@ jobs:
           architecture: arm64
       - name: Fingerprint the dependency build inputs
         run: |
-          $fingerprint = '${{ hashFiles('.github/arm64-pins.json', 'craftmaster.ini', '.github/scripts/**', '.github/workflows/arm64-release.yml') }}'
+          $currentFingerprint = '${{ hashFiles('.github/arm64-pins.json', 'craftmaster.ini', '.github/scripts/**', '.github/workflows/arm64-release.yml') }}'
+          $savedFingerprint = (Get-Content '.github/arm64-cache-recovery.txt' -Raw).Trim()
+          $fingerprint = python '.github/scripts/arm64_cache_recovery.py' $currentFingerprint $savedFingerprint
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           if ($fingerprint -notmatch '^[0-9a-f]{64}$') { throw "Invalid dependency fingerprint: $fingerprint" }
           Write-Host "Dependency build fingerprint: $fingerprint"
           "ARM64_CACHE_FINGERPRINT=$fingerprint" >> $env:GITHUB_ENV

@@ -21,7 +21,18 @@ def verify_directory(directory):
     for name in ('nextcloud.exe', 'Qt6Core.dll'):
         if not (directory / name).is_file():
             raise ValueError(f'Missing required binary: {name}')
-    files = sorted(p for p in directory.rglob('*') if p.suffix.lower() in ('.exe', '.dll') and p.is_file())
+    files = []
+    for path in sorted(directory.rglob('*')):
+        if not path.is_file() or path.suffix.lower() not in ('.exe', '.dll'):
+            continue
+        relative = path.relative_to(directory)
+        if tuple(part.casefold() for part in relative.parts[:2]) == ('data', 'doc'):
+            continue
+        # Match the executable selection in the Nextcloud Craft blacklist:
+        # bin/(?!(nextcloud|nextcloudcmd|QtWebEngineProcess)).*\.exe
+        if path.suffix.lower() == '.exe' and not relative.as_posix().casefold().startswith(('nextcloud', 'qtwebengineprocess')):
+            continue
+        files.append(path)
     for path in files:
         try:
             verify_pe(path.read_bytes())

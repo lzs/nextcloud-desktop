@@ -56,6 +56,34 @@ class BinaryTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp, self.assertRaises(ValueError):
             verify_directory(Path(tmp))
 
+    def test_gettext_documentation_example_is_not_an_application_binary(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            for name in ('nextcloud.exe', 'Qt6Core.dll'):
+                (root / name).write_bytes(pe())
+            examples = root / 'data/doc/gettext/examples/build-aux'
+            examples.mkdir(parents=True)
+            (examples / 'csharpexec-test.exe').write_bytes(pe(0x14c))
+            verify_directory(root)
+
+    def test_packaging_excluded_build_utility_is_not_an_application_binary(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            for name in ('nextcloud.exe', 'Qt6Core.dll'):
+                (root / name).write_bytes(pe())
+            (root / 'build-utility.exe').write_bytes(pe(0x14c))
+            verify_directory(root)
+
+    def test_packaged_application_executables_remain_checked(self):
+        for name in ('nextcloudcmd.exe', 'QtWebEngineProcess.exe'):
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                for required in ('nextcloud.exe', 'Qt6Core.dll'):
+                    (root / required).write_bytes(pe())
+                (root / name).write_bytes(pe(0x14c))
+                with self.assertRaisesRegex(ValueError, name):
+                    verify_directory(root)
+
 
 class SourceTests(unittest.TestCase):
     def test_build_metadata_allowed_but_source_changes_rejected(self):
