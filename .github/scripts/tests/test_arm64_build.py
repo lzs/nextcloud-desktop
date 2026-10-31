@@ -11,7 +11,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import arm64_prepare
-from arm64_verify import verify_directory, verify_pe
+from arm64_verify import microsoft_runtime_candidates, verify_directory, verify_pe
 
 
 def pe(machine=0xAA64):
@@ -83,6 +83,61 @@ class BinaryTests(unittest.TestCase):
                 (root / name).write_bytes(pe(0x14c))
                 with self.assertRaisesRegex(ValueError, name):
                     verify_directory(root)
+
+    def test_microsoft_companion_runtime_must_match_arm64_distribution(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / 'bin'
+            root.mkdir()
+            for name in ('nextcloud.exe', 'Qt6Core.dll'):
+                (root / name).write_bytes(pe())
+            companion = pe(0x8664)
+            (root / 'vcruntime140_1.dll').write_bytes(companion)
+            official = Path(tmp) / 'arm64/Microsoft.VC143.CRT/vcruntime140_1.dll'
+            official.parent.mkdir(parents=True)
+            official.write_bytes(companion)
+            report = Path(tmp) / 'binary-validation.json'
+            with patch('arm64_verify.microsoft_runtime_candidates', return_value=[official], create=True):
+                verify_directory(root, report)
+                proof = next(entry for entry in json.loads(report.read_text()) if entry['path'] == 'vcruntime140_1.dll')
+                self.assertEqual(proof['machine'], '0x8664')
+                self.assertEqual(proof['microsoft_arm64_redist_source'], str(official))
+                (root / 'vcruntime140_1.dll').write_bytes(companion + b'changed')
+                with self.assertRaisesRegex(ValueError, 'vcruntime140_1.dll'):
+                    verify_directory(root)
+
+    def test_companion_runtime_requires_an_official_source_match(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            for name in ('nextcloud.exe', 'Qt6Core.dll'):
+                (root / name).write_bytes(pe())
+            (root / 'vcruntime140_1.dll').write_bytes(pe(0x8664))
+            with patch('arm64_verify.microsoft_runtime_candidates', return_value=[], create=True):
+                with self.assertRaisesRegex(ValueError, 'vcruntime140_1.dll'):
+                    verify_directory(root)
+
+    def test_companion_exception_does_not_apply_to_nested_plugins(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / 'bin'
+            root.mkdir()
+            for name in ('nextcloud.exe', 'Qt6Core.dll'):
+                (root / name).write_bytes(pe())
+            plugin = root / 'plugins/vcruntime140_1.dll'
+            plugin.parent.mkdir()
+            plugin.write_bytes(pe(0x8664))
+            with patch('arm64_verify.microsoft_runtime_candidates', return_value=[plugin], create=True):
+                with self.assertRaisesRegex(ValueError, 'vcruntime140_1.dll'):
+                    verify_directory(root)
+
+    def test_companion_discovery_uses_only_arm64_redist_directories(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp) / 'Microsoft Visual Studio/18/Enterprise/VC/Redist/MSVC/14.44.35112'
+            official = base / 'arm64/Microsoft.VC143.CRT/vcruntime140_1.dll'
+            wrong = base / 'x64/Microsoft.VC143.CRT/vcruntime140_1.dll'
+            for path in (official, wrong):
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(pe(0x8664))
+            with patch.dict('os.environ', {'ProgramFiles': tmp, 'ProgramFiles(x86)': tmp}):
+                self.assertEqual(microsoft_runtime_candidates(), [official])
 
 
 class SourceTests(unittest.TestCase):
