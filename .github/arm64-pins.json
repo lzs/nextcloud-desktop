@@ -1,0 +1,30 @@
+{
+  "source": {
+    "url": "https://github.com/nextcloud/desktop.git",
+    "tag": "v35.0.2",
+    "revision": "07761410a90a2f27007932fcb61afc23ddda5998"
+  },
+  "craft": {
+    "url": "https://github.com/nextcloud/craft.git",
+    "revision": "a35a7cc53b3a06609081c1227156d4d59963927f"
+  },
+  "craftmaster": {
+    "url": "https://github.com/KDE/craftmaster.git",
+    "revision": "8a19d8fcab223b8b27126d98a46ed824b5948665"
+  },
+  "craft-blueprints-kde": {
+    "url": "https://github.com/nextcloud/craft-blueprints-kde.git",
+    "branch": "stable-35.0",
+    "revision": "d09c61abb67d3a1b219010d64f9139fea68694fe"
+  },
+  "craft-blueprints-nextcloud": {
+    "url": "https://github.com/nextcloud/craft-blueprints-nextcloud.git",
+    "branch": "stable-35.0",
+    "revision": "d9829275a569d3cf83e42ad9c50140074d01dd9f"
+  },
+  "reference": {
+    "url": "https://github.com/Dudiebug/nextclouddesktoparm",
+    "revision": "d8634255ce3a671629424e1a5cabdd7e962e1ad8",
+    "purpose": "Vendored build scripts and tests only; never fetched during the build."
+  }
+}

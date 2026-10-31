@@ -1,0 +1,90 @@
+PERSONAL WINDOWS ARM64 BUILD
+
+This setup builds official Nextcloud Desktop v35.0.2 with ARM64 fixes to its
+build tools. Application and packaging sources outside .github remain identical
+to official commit 07761410a90a2f27007932fcb61afc23ddda5998.
+
+FEATURES AND LIMITS
+
+No feature-removal patch is applied. The normal Windows build targets, including
+virtual files, remain in the source. Keeping them does not prove that installation,
+Explorer registration, virtual files, or syncing work on a physical ARM64 device.
+The generic Craft NSIS installer must be tested for these behaviors. It is an
+unsigned personal build. Its installer launcher may use a different architecture
+from the ARM64 application payload.
+
+HOW TO START
+
+1. Push the prepared windows-arm64 branch to lzs/nextcloud-desktop.
+2. Visit https://github.com/lzs/nextcloud-desktop/actions and enable Actions if
+   GitHub asks. If Actions was disabled when you pushed, enable it and use the
+   default-branch option below to start the build manually.
+3. The first push adding the workflow starts Build Windows ARM64. Open the run
+   to follow its progress. Changes to its scripts or pins start another build.
+4. On success, download nextcloud-windows-arm64-35.0.2 from the run's Artifacts
+   section. Extract it to find the installer, checksum, build manifest, generated
+   Craft configuration, and exact patches applied to the upstream build tools.
+
+Enable Actions BEFORE the first push for the simplest setup. No GitHub token or
+code-signing certificate needs to be added as a secret. The workflow's repository
+token has read-only contents access and cannot publish releases or push code.
+
+If you want a Run workflow button, set windows-arm64 as your fork's default
+branch in Settings > General > Default branch. GitHub requires workflow_dispatch
+to be present on the default branch. This optional change does not affect upstream.
+
+TIME AND RESTARTS
+
+The first build compiles dependencies, including Qt, and can take hours. The
+hosted job has a six-hour limit. Six checkpoints save completed dependency phases
+in YOUR repository's Actions cache. Re-run a failed job to reuse matching completed
+phases. A phase interrupted before completion may need to rebuild. These caches
+are not fetched from the reference project. Changing pins/scripts/workflow changes
+the cache fingerprint and starts with matching inputs only. Delete your own cache
+in Actions > Caches when you want a completely fresh dependency build.
+
+If a build fails, open its first failing step. The workflow also attempts to
+save craft-client.log, craft-package.log, and test diagnostic logs on failure.
+Dependency failures are visible in the job log. A failed test prevents packaging;
+the setup does not label a failing build as successful.
+
+SOURCE AND TRUST
+
+.github/arm64-pins.json records exact official commits for the application, Craft,
+CraftMaster, and KDE/Nextcloud dependency recipes. The build checks the application
+source against the pinned official release and downloads build tools directly from
+their listed upstream repositories. It disables Craft's precompiled dependency
+cache. Compilers, GitHub Actions, binary build utilities, Python packages, and
+Microsoft runtime files remain external build inputs. Dependency recipes may
+fetch those inputs and sources from their own upstream URLs. This is not a claim
+of a hermetic or bit-for-bit reproducible build.
+
+The ARM64 build scripts and tests were adapted from:
+https://github.com/Dudiebug/nextclouddesktoparm
+arm64-tooling commit d8634255ce3a671629424e1a5cabdd7e962e1ad8
+
+Their copyright and GPL-2.0-or-later notices are retained. The scripts are included
+in YOUR repository, where they can be read and changed. The build never downloads
+that project's scripts, releases, or dependency caches at runtime. Building from
+source does not remove the need to review copied build instructions.
+
+Adaptations include fixed official source/tool revisions, source verification,
+local patch manifests, read-only repository permissions, no release publishing,
+strict matching cache keys, and expanded ARM64 binary verification. An obsolete
+resource-header rewriting patch was removed; the resource wrapper invokes the
+Windows SDK resource compiler and ARM64 cvtres instead. Test environment changes
+use UTC and the Windows Vista widget style for widget tests, with Qt Quick tests
+run separately; test sources and their pass/fail results are retained.
+
+The workflow is AI-assisted. Any later upstream contribution must follow
+Nextcloud's contribution and AI policies, including human review, testing,
+authorship disclosure, and human-written project communication.
+
+LOCAL VALIDATION ON 2026-10-31
+
+69 build-script tests passed. ARM64 patches applied successfully to the exact
+pinned Craft and dependency-recipe sources. Patched Python syntax was checked.
+Workflow YAML and its embedded PowerShell scripts were checked locally.
+The complete ARM64 compile, client tests, installer, and physical-device behavior
+have not been validated locally. The first Actions run is required to establish
+whether the complete build succeeds.

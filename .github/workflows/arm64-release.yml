@@ -1,0 +1,346 @@
+# SPDX-FileCopyrightText: 2026 Nextcloud GmbH and Nextcloud contributors
+# SPDX-License-Identifier: GPL-2.0-or-later
+name: Build Windows ARM64
+on:
+  push:
+    branches: [windows-arm64]
+    paths:
+      - .github/arm64-pins.json
+      - .github/scripts/**
+      - .github/workflows/arm64-release.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: arm64-release-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  build-release:
+    name: Build Nextcloud Desktop Windows ARM64
+    runs-on: windows-11-vs2026-arm
+    timeout-minutes: 360
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      CRAFT_TARGET: windows-msvc2022_arm64-cl
+      CRAFT_MASTER_LOCATION: ${{ github.workspace }}\CraftMaster
+      CRAFT_MASTER_CONFIG: ${{ github.workspace }}\craftmaster-arm64.ini
+      PIP_USE_DEPRECATED: legacy-certs
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: '3.12'
+          architecture: arm64
+      - name: Fingerprint the dependency build inputs
+        run: |
+          $fingerprint = '${{ hashFiles('.github/arm64-pins.json', 'craftmaster.ini', '.github/scripts/**', '.github/workflows/arm64-release.yml') }}'
+          if ($fingerprint -notmatch '^[0-9a-f]{64}$') { throw "Invalid dependency fingerprint: $fingerprint" }
+          Write-Host "Dependency build fingerprint: $fingerprint"
+          "ARM64_CACHE_FINGERPRINT=$fingerprint" >> $env:GITHUB_ENV
+      - name: Run build-script regression tests
+        run: |
+          python -m unittest discover -s .github/scripts/tests -v
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python -m compileall -q .github/scripts
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Verify official source and build pins
+        id: version
+        run: |
+          python '.github/scripts/arm64_prepare.py' verify
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          "version=35.0.2" >> $env:GITHUB_OUTPUT
+      - name: Restore latest ARM64 dependency checkpoint
+        id: dependency-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: |
+            ${{ github.workspace }}\CraftMaster
+            ${{ github.workspace }}\craft-clone
+            ${{ github.workspace }}\craftmaster-arm64.ini
+            ${{ github.workspace }}\${{ env.CRAFT_TARGET }}
+          key: arm64-deps-${{ env.ARM64_CACHE_FINGERPRINT }}-complete
+          restore-keys: |
+            arm64-deps-${{ env.ARM64_CACHE_FINGERPRINT }}-phase-
+      - name: Prepare pinned Craft and ARM64 blueprints
+        run: |
+          python '.github/scripts/arm64_prepare.py' prepare
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Build dependency checkpoint 01 - foundation
+        id: dep01
+        timeout-minutes: 300
+        run: |
+          $root = Join-Path $env:GITHUB_WORKSPACE $env:CRAFT_TARGET
+          $markers = Join-Path $root '.arm64-dependency-checkpoints'
+          $marker = Join-Path $markers '01-foundation'
+          if (Test-Path $marker) {
+            Write-Host 'Checkpoint 01 already restored.'
+            "changed=false" >> $env:GITHUB_OUTPUT
+            exit 0
+          }
+          $pythonBlueprint = Join-Path $env:GITHUB_WORKSPACE 'craft-clone/blueprints/libs/python/python.py'
+          $zlibName = (python '.github/scripts/arm64_zlib.py' $pythonBlueprint)
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $zlibName = "$zlibName".Trim()
+          Write-Host "Craft's Python build links lib/$zlibName"
+          $bootstrap = @('--options', 'virtual/base.ignored=True')
+          foreach ($package in @('dev-utils/cmake', 'dev-utils/ninja', 'dev-utils/patch', 'libs/zlib')) {
+            Write-Host "Bootstrapping ARM64 dependency without virtual/base: $package"
+            & python "$env:CRAFT_MASTER_LOCATION/CraftMaster.py" --config $env:CRAFT_MASTER_CONFIG --target $env:CRAFT_TARGET -c @bootstrap $package
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+          $zlibLib = Join-Path $root "lib/$zlibName"
+          if (-not (Test-Path $zlibLib)) { throw "zlib bootstrap did not produce $zlibLib" }
+          Write-Host "Verified $zlibLib"
+          foreach ($package in @('libs/zlib', 'libs/openssl')) {
+            Write-Host "Building ARM64 dependency: $package"
+            & python "$env:CRAFT_MASTER_LOCATION/CraftMaster.py" --config $env:CRAFT_MASTER_CONFIG --target $env:CRAFT_TARGET -c $package
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+          New-Item -ItemType Directory -Force $markers | Out-Null
+          Set-Content $marker 'complete' -Encoding ascii
+          "changed=true" >> $env:GITHUB_OUTPUT
+      - name: Save dependency checkpoint 01
+        if: steps.dep01.outputs.changed == 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: |
+            ${{ github.workspace }}\CraftMaster
+            ${{ github.workspace }}\craft-clone
+            ${{ github.workspace }}\craftmaster-arm64.ini
+            ${{ github.workspace }}\${{ env.CRAFT_TARGET }}
+          key: arm64-deps-${{ env.ARM64_CACHE_FINGERPRINT }}-phase-01
+      - name: Build dependency checkpoint 02 - Qt Base
+        id: dep02
+        timeout-minutes: 300
+        run: |
+          $root = Join-Path $env:GITHUB_WORKSPACE $env:CRAFT_TARGET
+          $markers = Join-Path $root '.arm64-dependency-checkpoints'
+          $marker = Join-Path $markers '02-qtbase'
+          if (Test-Path $marker) {
+            Write-Host 'Checkpoint 02 already restored.'
+            "changed=false" >> $env:GITHUB_OUTPUT
+            exit 0
+          }
+          & python "$env:CRAFT_MASTER_LOCATION/CraftMaster.py" --config $env:CRAFT_MASTER_CONFIG --target $env:CRAFT_TARGET -c 'libs/qt6/qtbase'
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          New-Item -ItemType Directory -Force $markers | Out-Null
+          Set-Content $marker 'complete' -Encoding ascii
+          "changed=true" >> $env:GITHUB_OUTPUT
+      - name: Save dependency checkpoint 02
+        if: steps.dep02.outputs.changed == 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: |
+            ${{ github.workspace }}\CraftMaster
+            ${{ github.workspace }}\craft-clone
+            ${{ github.workspace }}\craftmaster-arm64.ini
+            ${{ github.workspace }}\${{ env.CRAFT_TARGET }}
+          key: arm64-deps-${{ env.ARM64_CACHE_FINGERPRINT }}-phase-02
+      - name: Build dependency checkpoint 03 - Qt Declarative
+        id: dep03
+        timeout-minutes: 300
+        run: |
+          $root = Join-Path $env:GITHUB_WORKSPACE $env:CRAFT_TARGET
+          $markers = Join-Path $root '.arm64-dependency-checkpoints'
+          $marker = Join-Path $markers '03-qtdeclarative'
+          if (Test-Path $marker) {
+            Write-Host 'Checkpoint 03 already restored.'
+            "changed=false" >> $env:GITHUB_OUTPUT
+            exit 0
+          }
+          & python "$env:CRAFT_MASTER_LOCATION/CraftMaster.py" --config $env:CRAFT_MASTER_CONFIG --target $env:CRAFT_TARGET -c 'libs/qt6/qtdeclarative'
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          New-Item -ItemType Directory -Force $markers | Out-Null
+          Set-Content $marker 'complete' -Encoding ascii
+          "changed=true" >> $env:GITHUB_OUTPUT
+      - name: Save dependency checkpoint 03
+        if: steps.dep03.outputs.changed == 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: |
+            ${{ github.workspace }}\CraftMaster
+            ${{ github.workspace }}\craft-clone
+            ${{ github.workspace }}\craftmaster-arm64.ini
+            ${{ github.workspace }}\${{ env.CRAFT_TARGET }}
+          key: arm64-deps-${{ env.ARM64_CACHE_FINGERPRINT }}-phase-03
+      - name: Build dependency checkpoint 04 - Qt modules
+        id: dep04
+        timeout-minutes: 300
+        run: |
+          $root = Join-Path $env:GITHUB_WORKSPACE $env:CRAFT_TARGET
+          $markers = Join-Path $root '.arm64-dependency-checkpoints'
+          $marker = Join-Path $markers '04-qt-modules'
+          if (Test-Path $marker) {
+            Write-Host 'Checkpoint 04 already restored.'
+            "changed=false" >> $env:GITHUB_OUTPUT
+            exit 0
+          }
+          foreach ($package in @('libs/qt6/qtwebsockets', 'libs/qt/qtsvg', 'libs/qt6/qt5compat')) {
+            Write-Host "Building ARM64 dependency: $package"
+            & python "$env:CRAFT_MASTER_LOCATION/CraftMaster.py" --config $env:CRAFT_MASTER_CONFIG --target $env:CRAFT_TARGET -c $package
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+          New-Item -ItemType Directory -Force $markers | Out-Null
+          Set-Content $marker 'complete' -Encoding ascii
+          "changed=true" >> $env:GITHUB_OUTPUT
+      - name: Save dependency checkpoint 04
+        if: steps.dep04.outputs.changed == 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: |
+            ${{ github.workspace }}\CraftMaster
+            ${{ github.workspace }}\craft-clone
+            ${{ github.workspace }}\craftmaster-arm64.ini
+            ${{ github.workspace }}\${{ env.CRAFT_TARGET }}
+          key: arm64-deps-${{ env.ARM64_CACHE_FINGERPRINT }}-phase-04
+      - name: Build dependency checkpoint 05 - supporting libraries
+        id: dep05
+        timeout-minutes: 300
+        run: |
+          $root = Join-Path $env:GITHUB_WORKSPACE $env:CRAFT_TARGET
+          $markers = Join-Path $root '.arm64-dependency-checkpoints'
+          $marker = Join-Path $markers '05-supporting-libraries'
+          if (Test-Path $marker) {
+            Write-Host 'Checkpoint 05 already restored.'
+            "changed=false" >> $env:GITHUB_OUTPUT
+            exit 0
+          }
+          foreach ($package in @('libs/libp11', 'libs/kdsingleapplication', 'qt-libs/qtkeychain', 'kde/frameworks/tier1/karchive')) {
+            Write-Host "Building ARM64 dependency: $package"
+            & python "$env:CRAFT_MASTER_LOCATION/CraftMaster.py" --config $env:CRAFT_MASTER_CONFIG --target $env:CRAFT_TARGET -c $package
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+          New-Item -ItemType Directory -Force $markers | Out-Null
+          Set-Content $marker 'complete' -Encoding ascii
+          "changed=true" >> $env:GITHUB_OUTPUT
+      - name: Save dependency checkpoint 05
+        if: steps.dep05.outputs.changed == 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: |
+            ${{ github.workspace }}\CraftMaster
+            ${{ github.workspace }}\craft-clone
+            ${{ github.workspace }}\craftmaster-arm64.ini
+            ${{ github.workspace }}\${{ env.CRAFT_TARGET }}
+          key: arm64-deps-${{ env.ARM64_CACHE_FINGERPRINT }}-phase-05
+      - name: Verify complete Nextcloud dependency graph
+        id: depcomplete
+        timeout-minutes: 300
+        run: |
+          $root = Join-Path $env:GITHUB_WORKSPACE $env:CRAFT_TARGET
+          $markers = Join-Path $root '.arm64-dependency-checkpoints'
+          $marker = Join-Path $markers '06-complete-graph'
+          if (Test-Path $marker) {
+            Write-Host 'Complete dependency graph checkpoint already restored.'
+            "changed=false" >> $env:GITHUB_OUTPUT
+            exit 0
+          }
+          & python "$env:CRAFT_MASTER_LOCATION/CraftMaster.py" --config $env:CRAFT_MASTER_CONFIG --target $env:CRAFT_TARGET -c --install-deps nextcloud-client
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          New-Item -ItemType Directory -Force $markers | Out-Null
+          Set-Content $marker 'complete' -Encoding ascii
+          "changed=true" >> $env:GITHUB_OUTPUT
+      - name: Save complete ARM64 dependency workspace
+        if: steps.depcomplete.outputs.changed == 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: |
+            ${{ github.workspace }}\CraftMaster
+            ${{ github.workspace }}\craft-clone
+            ${{ github.workspace }}\craftmaster-arm64.ini
+            ${{ github.workspace }}\${{ env.CRAFT_TARGET }}
+          key: arm64-deps-${{ env.ARM64_CACHE_FINGERPRINT }}-complete
+      - name: Install Inkscape for icon generation
+        run: choco install inkscape --no-progress -y
+      - name: Compile client and run its tests
+        run: |
+          "$env:GITHUB_WORKSPACE/$env:CRAFT_TARGET/bin" >> $env:GITHUB_PATH
+          $env:PATH = "$env:GITHUB_WORKSPACE/$env:CRAFT_TARGET/bin;$env:PATH"
+          $log = Join-Path $env:RUNNER_TEMP 'craft-client.log'
+          & python "$env:CRAFT_MASTER_LOCATION/CraftMaster.py" --config $env:CRAFT_MASTER_CONFIG --target $env:CRAFT_TARGET -c --src-dir $env:GITHUB_WORKSPACE nextcloud-client *> $log
+          $code = $LASTEXITCODE
+          Get-Content $log -Tail 70
+          if ($code -ne 0) { throw "Client compilation failed: $code" }
+          $testDir = "$env:GITHUB_WORKSPACE/$env:CRAFT_TARGET/build/nextcloud-client/work/build"
+          $quickControlsTests = @('SharingDialogTest', 'WindowCloseQmlTest')
+          $quickControlsPattern = '^(' + (($quickControlsTests | ForEach-Object { [regex]::Escape($_) }) -join '|') + ')$'
+          $runnerTimeZone = (Get-TimeZone).Id
+          Write-Host "Runner time zone: $runnerTimeZone; running CTest with UTC"
+          Set-TimeZone -Id 'UTC'
+          function Invoke-CTestPass([string]$label, [string[]]$selection, [bool]$vistaStyle) {
+            if ($vistaStyle) { $env:QT_STYLE_OVERRIDE = 'windowsvista' } else { Remove-Item Env:QT_STYLE_OVERRIDE -ErrorAction SilentlyContinue }
+            Write-Host "CTest pass '$label' (windowsvista style override: $vistaStyle)"
+            $testsStarted = Get-Date
+            & ctest --test-dir $testDir --output-on-failure --no-tests=error --timeout 300 @selection | Out-Host
+            $passCode = $LASTEXITCODE
+            if ($passCode -ne 0) {
+              $failedList = Join-Path $testDir 'Testing/Temporary/LastTestsFailed.log'
+              if (Test-Path $failedList) {
+                foreach ($entry in Get-Content $failedList) {
+                  $name = ($entry -split ':', 2)[-1].Trim()
+                  Write-Host "::group::Diagnostics for failed test $name"
+                  $report = Join-Path $env:RUNNER_TEMP "craft-test-$name.log"
+                  $env:QT_FORCE_STDERR_LOGGING = '1'
+                  & ctest --test-dir $testDir -V --timeout 300 -R ('^' + [regex]::Escape($name) + '$') 2>&1 | Tee-Object -FilePath $report | Out-Host
+                  $code = $LASTEXITCODE
+                  Remove-Item Env:QT_FORCE_STDERR_LOGGING
+                  Write-Host ("{0} re-run ctest exit code: {1}" -f $name, $code)
+                  Write-Host '::endgroup::'
+                }
+              }
+              Write-Host '::group::Windows application errors during tests'
+              Get-WinEvent -FilterHashtable @{ LogName = 'Application'; StartTime = $testsStarted } -ErrorAction SilentlyContinue |
+                Where-Object { $_.ProviderName -in @('Application Error', 'Windows Error Reporting') } |
+                Select-Object -First 20 | Format-List TimeCreated, ProviderName, Message | Out-Host
+              Write-Host '::endgroup::'
+            }
+            Remove-Item Env:QT_STYLE_OVERRIDE -ErrorAction SilentlyContinue
+            return $passCode
+          }
+          $widgetCode = [int](Invoke-CTestPass 'widget style' @('-E', $quickControlsPattern) $true)
+          $quickCode = [int](Invoke-CTestPass 'Qt Quick Controls' @('-R', $quickControlsPattern) $false)
+          Set-TimeZone -Id $runnerTimeZone
+          if ($widgetCode -ne 0) { exit $widgetCode }
+          if ($quickCode -ne 0) { exit $quickCode }
+      - name: Validate native binaries and package installer
+        run: |
+          $root = Join-Path $env:GITHUB_WORKSPACE $env:CRAFT_TARGET
+          python '.github/scripts/arm64_verify.py' "$root/bin"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $version = '${{ steps.version.outputs.version }}'
+          $fileVersion = (Get-Item "$root/bin/nextcloud.exe").VersionInfo.FileVersion
+          if ($fileVersion -notmatch ('^' + [regex]::Escape($version) + '(\D|$)')) { throw "Unexpected binary version: $fileVersion" }
+          & python "$env:CRAFT_MASTER_LOCATION/CraftMaster.py" --config $env:CRAFT_MASTER_CONFIG --target $env:CRAFT_TARGET -c 'dev-utils/nsis'
+          if ($LASTEXITCODE -ne 0) { throw "NSIS installation failed: $LASTEXITCODE" }
+          $log = Join-Path $env:RUNNER_TEMP 'craft-package.log'
+          & python "$env:CRAFT_MASTER_LOCATION/CraftMaster.py" --config $env:CRAFT_MASTER_CONFIG --target $env:CRAFT_TARGET -c --src-dir $env:GITHUB_WORKSPACE --package nextcloud-client *> $log
+          $code = $LASTEXITCODE
+          Get-Content $log -Tail 70
+          if ($code -ne 0) { throw "Installer packaging failed: $code" }
+          $installer = Get-ChildItem $root -Recurse -Filter '*.exe' -File |
+            Where-Object { $_.Name -match '(?i)nextcloud.*(setup|installer|arm64)' } |
+            Sort-Object LastWriteTime -Descending | Select-Object -First 1
+          if (-not $installer) { throw 'No NSIS installer was produced' }
+          $name = "Nextcloud-$version-Windows-ARM64-setup.exe"
+          Copy-Item $installer.FullName "release-output/$name"
+          $hash = (Get-FileHash "release-output/$name" -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$hash  $name" | Set-Content 'release-output/SHA256SUMS.txt' -Encoding ascii
+      - name: Upload validated installer
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: nextcloud-windows-arm64-${{ steps.version.outputs.version }}
+          path: release-output/*
+          if-no-files-found: error
+          retention-days: 30
+      - name: Preserve bounded troubleshooting logs
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: arm64-build-failure-logs
+          path: ${{ runner.temp }}/craft-*.log
+          if-no-files-found: ignore
+          retention-days: 7
